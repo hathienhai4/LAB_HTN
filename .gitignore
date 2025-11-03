@@ -1,0 +1,28 @@
+# IDE/workspace metadata
+.metadata/
+.settings/
+
+# Build outputs and binaries
+Debug/
+*.elf
+*.bin
+*.hex
+*.map
+*.lst
+*.list
+*.o
+*.d
+*.su
+
+# STM32Cube/IDE artifacts
+*.launch
+*.log
+
+# VSCode/IDE
+.vscode/
+.idea/
+
+# Temporary files
+*~
+Thumbs.db
+.DS_Store
