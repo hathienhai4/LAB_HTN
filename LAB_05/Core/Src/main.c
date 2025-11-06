@@ -28,6 +28,7 @@
 #include "lcd.h"
 #include "picture.h"
 #include "ds3231.h"
+#include "uart.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -37,19 +38,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define INIT				0
 
-#define MODE_DISPLAY_TIME 	2
-#define MODE_SET_TIME 		3
-#define MODE_SET_ALARM 		4
-
-#define PARAM_HOUR 			10
-#define PARAM_MIN 			11
-#define PARAM_SEC 			12
-#define PARAM_DATE 			13
-#define PARAM_MONTH 		14
-#define PARAM_YEAR 			15
-#define PARAM_DAY 			16
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -63,6 +52,8 @@ I2C_HandleTypeDef hi2c1;
 SPI_HandleTypeDef hspi1;
 
 TIM_HandleTypeDef htim2;
+
+UART_HandleTypeDef huart1;
 
 SRAM_HandleTypeDef hsram1;
 
@@ -101,16 +92,11 @@ static void MX_SPI1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_FSMC_Init(void);
 static void MX_I2C1_Init(void);
+static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 void system_init();
 void test_LedDebug();
-void displayTime();
-void updateTime();
-void displayModeIndicator();
-void displayAlarmTime();
-void checkAlarm();
-void displayTime();
-void fsm_clock();
+void test_Uart();
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -150,6 +136,7 @@ int main(void)
   MX_TIM2_Init();
   MX_FSMC_Init();
   MX_I2C1_Init();
+  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
   system_init();
   /* USER CODE END 2 */
@@ -163,9 +150,9 @@ int main(void)
 	  while(!flag_timer2);
 	  flag_timer2 = 0;
 	  button_Scan();
+	  test_LedDebug();
 	  ds3231_ReadTime();
-//	  displayTime();
-	  fsm_clock();
+	  test_Uart();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -335,6 +322,39 @@ static void MX_TIM2_Init(void)
 }
 
 /**
+  * @brief USART1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART1_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART1_Init 0 */
+
+  /* USER CODE END USART1_Init 0 */
+
+  /* USER CODE BEGIN USART1_Init 1 */
+
+  /* USER CODE END USART1_Init 1 */
+  huart1.Instance = USART1;
+  huart1.Init.BaudRate = 115200;
+  huart1.Init.WordLength = UART_WORDLENGTH_8B;
+  huart1.Init.StopBits = UART_STOPBITS_1;
+  huart1.Init.Parity = UART_PARITY_NONE;
+  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART1_Init 2 */
+
+  /* USER CODE END USART1_Init 2 */
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -486,9 +506,11 @@ void system_init(){
 	  led7_init();
 	  button_init();
 	  lcd_init();
-	  ds3231_init();
+	  uart_init_rs232();
 	  setTimer2(50);
 }
+
+uint16_t count_led_debug = 0;
 
 void test_LedDebug(){
 	count_led_debug = (count_led_debug + 1)%20;
@@ -497,12 +519,6 @@ void test_LedDebug(){
 	}
 }
 
-void test_7seg(){
-	led7_SetDigit(0, 0, 0);
-	led7_SetDigit(5, 1, 0);
-	led7_SetDigit(4, 2, 0);
-	led7_SetDigit(7, 3, 0);
-}
 void test_button(){
 	for(int i = 0; i < 16; i++){
 		if(button_count[i] == 1){
@@ -512,321 +528,14 @@ void test_button(){
 	}
 }
 
-void updateTime(){
-	ds3231_Write(ADDRESS_YEAR, 25);
-	ds3231_Write(ADDRESS_MONTH, 11);
-	ds3231_Write(ADDRESS_DATE, 03);
-	ds3231_Write(ADDRESS_DAY, 2);
-	ds3231_Write(ADDRESS_HOUR, 17);
-	ds3231_Write(ADDRESS_MIN, 45);
-	ds3231_Write(ADDRESS_SEC, 30);
-}
-
-uint8_t isButtonUp()
-{
-    if (button_count[3] == 1)
-        return 1;
-    else
-        return 0;
-}
-uint8_t isButtonDown()
-{
-    if (button_count[7] == 1)
-        return 1;
-    else
-        return 0;
-}
-
-uint8_t state = INIT;
-
-void displayModeIndicator() {
-    lcd_Fill(0, 0, 240, 20, BLACK);
-    switch(state) {
-        case MODE_DISPLAY_TIME:
-            lcd_ShowStr(10, 5, "MODE: DISPLAY TIME", WHITE, BLACK, 16, 0);
-            break;
-        case MODE_SET_TIME:
-            lcd_ShowStr(10, 5, "MODE: SET TIME", CYAN, BLACK, 16, 0);
-            break;
-        case MODE_SET_ALARM:
-            lcd_ShowStr(10, 5, "MODE: SET ALARM", MAGENTA, BLACK, 16, 0);
-            break;
-    }
-}
-
-void checkAlarm() {
-    if(alarm_hour == ds3231_hours && alarm_min == ds3231_min && alarm_sec == ds3231_sec)
-        if(!alarm_triggered)
-            alarm_triggered = 1;
-    
-    if(alarm_triggered) {
-        lcd_Fill(0, 180, 240, 220, RED);
-        lcd_ShowStr(40, 190, "*** ALARM ***", WHITE, RED, 24, 0);
-        
-        for(int i = 0; i < 16; i++) {
-            if(button_count[i] == 1) {
-                alarm_triggered = 0;
-                lcd_Fill(0, 180, 240, 220, BLACK);
-                break;
-            }
-        }
-    }
-}
-
-void displayAlarmTime() {
-    lcd_ShowStr(10, 260, "ALARM:", YELLOW, BLACK, 16, 0);
-    lcd_ShowIntNum(70, 260, alarm_hour, 2, YELLOW, BLACK, 16);
-    lcd_ShowIntNum(100, 260, alarm_min, 2, YELLOW, BLACK, 16);
-    lcd_ShowIntNum(130, 260, alarm_sec, 2, YELLOW, BLACK, 16);
-}
-
-void displayTime(){
-	blink_counter++;
-	if(blink_counter >= 10) {
-		blink_counter = 0;
-		blink_state = !blink_state;
-	}
-	
-	uint16_t hour_color = GREEN, min_color = GREEN, sec_color = GREEN;
-	uint16_t date_color = YELLOW, month_color = YELLOW, year_color = YELLOW, day_color = YELLOW;
-	
-	if((state == MODE_SET_TIME || state == MODE_SET_ALARM) && blink_state) {
-		switch(setting_param) {
-			case PARAM_HOUR: hour_color = BLACK; break;
-			case PARAM_MIN: min_color = BLACK; break;
-			case PARAM_SEC: sec_color = BLACK; break;
-			case PARAM_DATE: date_color = BLACK; break;
-			case PARAM_MONTH: month_color = BLACK; break;
-			case PARAM_YEAR: year_color = BLACK; break;
-			case PARAM_DAY: day_color = BLACK; break;
-		}
-	}
-	
-	// Display based on mode
-	if(state == MODE_SET_TIME) {
-		lcd_ShowIntNum(70, 100, temp_hour, 2, hour_color, BLACK, 24);
-		lcd_ShowIntNum(110, 100, temp_min, 2, min_color, BLACK, 24);
-		lcd_ShowIntNum(150, 100, temp_sec, 2, sec_color, BLACK, 24);
-		
-		lcd_ShowIntNum(20, 130, temp_day, 2, day_color, BLACK, 24);
-		lcd_ShowIntNum(70, 130, temp_date, 2, date_color, BLACK, 24);
-		lcd_ShowIntNum(110, 130, temp_month, 2, month_color, BLACK, 24);
-		lcd_ShowIntNum(150, 130, temp_year, 2, year_color, BLACK, 24);
-	} else if(state == MODE_SET_ALARM) {
-		lcd_ShowStr(10, 100, "SET ALARM:", MAGENTA, BLACK, 24, 0);
-		lcd_ShowIntNum(70, 130, alarm_hour, 2, hour_color, BLACK, 24);
-		lcd_ShowIntNum(110, 130, alarm_min, 2, min_color, BLACK, 24);
-		lcd_ShowIntNum(150, 130, alarm_sec, 2, sec_color, BLACK, 24);
-	} else {
-		lcd_ShowIntNum(70, 100, ds3231_hours, 2, hour_color, BLACK, 24);
-		lcd_ShowIntNum(110, 100, ds3231_min, 2, min_color, BLACK, 24);
-		lcd_ShowIntNum(150, 100, ds3231_sec, 2, sec_color, BLACK, 24);
-		
-		lcd_ShowIntNum(20, 130, ds3231_day, 2, day_color, BLACK, 24);
-		lcd_ShowIntNum(70, 130, ds3231_date, 2, date_color, BLACK, 24);
-		lcd_ShowIntNum(110, 130, ds3231_month, 2, month_color, BLACK, 24);
-		lcd_ShowIntNum(150, 130, ds3231_year, 2, year_color, BLACK, 24);
-		
-		displayAlarmTime();
-		checkAlarm();
-	}
-}
-
-void incrementParameter() {
-	switch(setting_param) {
-		case PARAM_HOUR:
-			if(state == MODE_SET_TIME) temp_hour = (temp_hour + 1) % 24;
-			else alarm_hour = (alarm_hour + 1) % 24;
-			break;
-		case PARAM_MIN:
-			if(state == MODE_SET_TIME) temp_min = (temp_min + 1) % 60;
-			else alarm_min = (alarm_min + 1) % 60;
-			break;
-		case PARAM_SEC:
-			if(state == MODE_SET_TIME) temp_sec = (temp_sec + 1) % 60;
-			else alarm_sec = (alarm_sec + 1) % 60;
-			break;
-		case PARAM_DATE:
-			temp_date = (temp_date % 31) + 1;
-			break;
-		case PARAM_MONTH:
-			temp_month = (temp_month % 12) + 1;
-			break;
-		case PARAM_YEAR:
-			temp_year = (temp_year + 1) % 100;
-			break;
-		case PARAM_DAY:
-			temp_day = (temp_day % 7) + 1;
-			break;
-	}
-}
-
-void handleIncrementButton() {
-	if(button_count[3] >= 1) {
-		button_up_duration++;
-		if(button_count[3] == 1) {	// Single press - increment once
-			switch(setting_param) {
-				case PARAM_HOUR:
-					if(state == MODE_SET_TIME) temp_hour = (temp_hour + 1) % 24;
-					else alarm_hour = (alarm_hour + 1) % 24;
-					break;
-				case PARAM_MIN:
-					if(state == MODE_SET_TIME) temp_min = (temp_min + 1) % 60;
-					else alarm_min = (alarm_min + 1) % 60;
-					break;
-				case PARAM_SEC:
-					if(state == MODE_SET_TIME) temp_sec = (temp_sec + 1) % 60;
-					else alarm_sec = (alarm_sec + 1) % 60;
-					break;
-				case PARAM_DATE:
-					temp_date = (temp_date % 31) + 1;
-					break;
-				case PARAM_MONTH:
-					temp_month = (temp_month % 12) + 1;
-					break;
-				case PARAM_YEAR:
-					temp_year = (temp_year + 1) % 100;
-					break;
-				case PARAM_DAY:
-					temp_day = (temp_day % 7) + 1;
-					break;
-			}
-		}
-		else if(button_up_duration >= 40) { // Held for 2 seconds (40 cycles * 50ms)
-			auto_increment_counter++;
-			if(auto_increment_counter >= 4) { // Auto increment every 200ms (4 cycles)
-				auto_increment_counter = 0;
-				switch(setting_param) {
-					case PARAM_HOUR:
-						if(state == MODE_SET_TIME) temp_hour = (temp_hour + 1) % 24;
-						else alarm_hour = (alarm_hour + 1) % 24;
-						break;
-					case PARAM_MIN:
-						if(state == MODE_SET_TIME) temp_min = (temp_min + 1) % 60;
-						else alarm_min = (alarm_min + 1) % 60;
-						break;
-					case PARAM_SEC:
-						if(state == MODE_SET_TIME) temp_sec = (temp_sec + 1) % 60;
-						else alarm_sec = (alarm_sec + 1) % 60;
-						break;
-					case PARAM_DATE:
-						temp_date = (temp_date % 31) + 1;
-						break;
-					case PARAM_MONTH:
-						temp_month = (temp_month % 12) + 1;
-						break;
-					case PARAM_YEAR:
-						temp_year = (temp_year + 1) % 100;
-						break;
-					case PARAM_DAY:
-						temp_day = (temp_day % 7) + 1;
-						break;
-				}
-			}
-		}
-	} else {
-		button_up_duration = 0;
-		auto_increment_counter = 0;
-	}
-}
-
-void fsm_clock() {
-	static uint8_t last_state = 0xFF;
-	
-	switch (state) {
-	case INIT:
-		lcd_Clear(BLACK);
-		displayModeIndicator();
-		state = MODE_DISPLAY_TIME;
-		break;
-	case MODE_DISPLAY_TIME:
-		if(isButtonDown()) {
-			state = MODE_SET_TIME;
-			setting_param = PARAM_HOUR;
-			lcd_Clear(BLACK);
-			
-			temp_hour = ds3231_hours;
-			temp_min = ds3231_min;
-			temp_sec = ds3231_sec;
-			temp_date = ds3231_date;
-			temp_month = ds3231_month;
-			temp_year = ds3231_year;
-			temp_day = ds3231_day;
-			last_state = 0xFF;
-		}
-		
-		if(last_state != state) {
-			displayModeIndicator();
-			last_state = state;
-		}
-		
-		displayTime();
-		break;
-	case MODE_SET_TIME:
-		if(isButtonDown()) {
-			state = MODE_SET_ALARM;
-			setting_param = PARAM_HOUR;
-			lcd_Clear(BLACK);
-			last_state = 0xFF;
-		}
-		
-		if(last_state != state) {
-			displayModeIndicator();
-			last_state = state;
-		}
-		
-		handleIncrementButton();
-		
-		if(button_count[12] == 1) {
-			setting_param++;
-			
-			if(setting_param > PARAM_DAY) {
-				ds3231_Write(ADDRESS_HOUR, temp_hour);
-				ds3231_Write(ADDRESS_MIN, temp_min);
-				ds3231_Write(ADDRESS_SEC, temp_sec);
-				ds3231_Write(ADDRESS_DATE, temp_date);
-				ds3231_Write(ADDRESS_MONTH, temp_month);
-				ds3231_Write(ADDRESS_YEAR, temp_year);
-				ds3231_Write(ADDRESS_DAY, temp_day);
-				
-				state = MODE_DISPLAY_TIME;
-				setting_param = PARAM_HOUR;
-				lcd_Clear(BLACK);
-				last_state = 0xFF;
-			}
-		}
-		
-		displayTime();
-		break;
-		
-	case MODE_SET_ALARM:
-		if(isButtonDown()) {
-			state = MODE_DISPLAY_TIME;
-			setting_param = PARAM_HOUR;
-			lcd_Clear(BLACK);
-			last_state = 0xFF;
-		}
-		
-		if(last_state != state) {
-			displayModeIndicator();
-			last_state = state;
-		}
-		
-		handleIncrementButton();
-		
-		if(button_count[12] == 1) {
-			setting_param++;
-			
-			if(setting_param > PARAM_SEC) {
-				state = MODE_DISPLAY_TIME;
-				setting_param = PARAM_HOUR;
-				lcd_Clear(BLACK);
-				last_state = 0xFF;
-			}
-		}
-		
-		displayTime();
-		break;
+void test_Uart(){
+	if(button_count[12] == 1){
+		uart_Rs232SendNum(ds3231_hours);
+		uart_Rs232SendString(":");
+		uart_Rs232SendNum(ds3231_min);
+		uart_Rs232SendString(":");
+		uart_Rs232SendNum(ds3231_sec);
+		uart_Rs232SendString("\n");
 	}
 }
 /* USER CODE END 4 */
