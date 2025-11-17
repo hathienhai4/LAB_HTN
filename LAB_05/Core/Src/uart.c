@@ -9,6 +9,9 @@
 
 uint8_t receive_buffer1 = 0;
 uint8_t msg[100];
+uint8_t buffer[BUFFER_SIZE];
+volatile uint8_t uart_flag = 0;
+uint8_t bf_head = 0, bf_tail = 0;
 
 void uart_init_rs232(){
 	HAL_UART_Receive_IT(&huart1, &receive_buffer1, 1);
@@ -58,12 +61,19 @@ void uart_Rs232SendNumPercent(uint32_t num)
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
 	if(huart->Instance == USART1){
-		// rs232 isr
-		// can be modified
-		HAL_UART_Transmit(&huart1, &receive_buffer1, 1, 10);
-
-
-		// turn on the receice interrupt
+		// Lưu dữ liệu vào ring buffer
+		buffer[bf_head] = receive_buffer1;
+		bf_head = (bf_head + 1) % BUFFER_SIZE;
+		
+		// Nếu buffer đầy, di chuyển tail
+		if(bf_head == bf_tail){
+			bf_tail = (bf_tail + 1) % BUFFER_SIZE;
+		}
+		
+		// Đặt cờ có dữ liệu
+		uart_flag = 1;
+		
+		// Bật lại interrupt để nhận byte tiếp theo
 		HAL_UART_Receive_IT(&huart1, &receive_buffer1, 1);
 	}
 }

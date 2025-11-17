@@ -22,6 +22,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdlib.h>
 #include "software_timer.h"
 #include "led_7seg.h"
 #include "button.h"
@@ -38,7 +39,20 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define INIT				0
 
+#define MODE_DISPLAY_TIME 	2
+#define MODE_SET_TIME 		3
+#define MODE_SET_ALARM 		4
+#define MODE_SET_UART		5
+
+#define PARAM_HOUR 			10
+#define PARAM_MIN 			11
+#define PARAM_SEC 			12
+#define PARAM_DATE 			13
+#define PARAM_MONTH 		14
+#define PARAM_YEAR 			15
+#define PARAM_DAY 			16
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -53,10 +67,9 @@ SPI_HandleTypeDef hspi1;
 
 TIM_HandleTypeDef htim2;
 
-UART_HandleTypeDef huart1;
-
 SRAM_HandleTypeDef hsram1;
 
+UART_HandleTypeDef huart1;
 /* USER CODE BEGIN PV */
 uint8_t count_led_debug = 0;
 
@@ -83,6 +96,10 @@ uint8_t alarm_triggered = 0;
 // Button press duration tracking
 uint16_t button_up_duration = 0;
 uint16_t auto_increment_counter = 0;
+// Request duration tracking
+uint16_t request_duration = 0;
+uint16_t request_counter = 0;
+uint8_t request_flag = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -96,7 +113,16 @@ static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 void system_init();
 void test_LedDebug();
+void displayTime();
+void updateTime();
+void displayModeIndicator();
+void displayAlarmTime();
+void checkAlarm();
+void displayTime();
+void fsm_clock();
 void test_Uart();
+void handle_Uart();
+void set_time_Uart();
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -150,9 +176,11 @@ int main(void)
 	  while(!flag_timer2);
 	  flag_timer2 = 0;
 	  button_Scan();
-	  test_LedDebug();
 	  ds3231_ReadTime();
-	  test_Uart();
+//	  displayTime();
+//	  test_Uart();
+//	  handle_Uart();
+	  fsm_clock();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -320,7 +348,6 @@ static void MX_TIM2_Init(void)
   /* USER CODE END TIM2_Init 2 */
 
 }
-
 /**
   * @brief USART1 Initialization Function
   * @param None
@@ -353,7 +380,6 @@ static void MX_USART1_UART_Init(void)
   /* USER CODE END USART1_Init 2 */
 
 }
-
 /**
   * @brief GPIO Initialization Function
   * @param None
@@ -506,11 +532,10 @@ void system_init(){
 	  led7_init();
 	  button_init();
 	  lcd_init();
+	  ds3231_init();
 	  uart_init_rs232();
 	  setTimer2(50);
 }
-
-uint16_t count_led_debug = 0;
 
 void test_LedDebug(){
 	count_led_debug = (count_led_debug + 1)%20;
@@ -519,6 +544,12 @@ void test_LedDebug(){
 	}
 }
 
+void test_7seg(){
+	led7_SetDigit(0, 0, 0);
+	led7_SetDigit(5, 1, 0);
+	led7_SetDigit(4, 2, 0);
+	led7_SetDigit(7, 3, 0);
+}
 void test_button(){
 	for(int i = 0; i < 16; i++){
 		if(button_count[i] == 1){
@@ -528,6 +559,368 @@ void test_button(){
 	}
 }
 
+void updateTime(){
+	ds3231_Write(ADDRESS_YEAR, 25);
+	ds3231_Write(ADDRESS_MONTH, 11);
+	ds3231_Write(ADDRESS_DATE, 03);
+	ds3231_Write(ADDRESS_DAY, 2);
+	ds3231_Write(ADDRESS_HOUR, 17);
+	ds3231_Write(ADDRESS_MIN, 45);
+	ds3231_Write(ADDRESS_SEC, 30);
+}
+
+uint8_t isButtonUp()
+{
+    if (button_count[3] == 1)
+        return 1;
+    else
+        return 0;
+}
+uint8_t isButtonDown()
+{
+    if (button_count[7] == 1)
+        return 1;
+    else
+        return 0;
+}
+
+uint8_t state = INIT;
+char *mode_str = "";
+void displayModeIndicator() {
+    lcd_Fill(0, 0, 240, 20, BLACK);
+    switch(state) {
+        case MODE_DISPLAY_TIME:
+            lcd_ShowStr(10, 5, "MODE: DISPLAY TIME", WHITE, BLACK, 16, 0);
+            break;
+        case MODE_SET_TIME:
+            lcd_ShowStr(10, 5, "MODE: SET TIME", CYAN, BLACK, 16, 0);
+            break;
+        case MODE_SET_ALARM:
+            lcd_ShowStr(10, 5, "MODE: SET ALARM", MAGENTA, BLACK, 16, 0);
+            break;
+        case MODE_SET_UART:
+            lcd_ShowStr(10, 5, mode_str, MAGENTA, BLACK, 16, 0);
+            break;
+    }
+}
+
+void checkAlarm() {
+    if(alarm_hour == ds3231_hours && alarm_min == ds3231_min && alarm_sec == ds3231_sec)
+        if(!alarm_triggered)
+            alarm_triggered = 1;
+
+    if(alarm_triggered) {
+        lcd_Fill(0, 180, 240, 220, RED);
+        lcd_ShowStr(40, 190, "*** ALARM ***", WHITE, RED, 24, 0);
+
+        for(int i = 0; i < 16; i++) {
+            if(button_count[i] == 1) {
+                alarm_triggered = 0;
+                lcd_Fill(0, 180, 240, 220, BLACK);
+                break;
+            }
+        }
+    }
+}
+
+void displayAlarmTime() {
+    lcd_ShowStr(10, 260, "ALARM:", YELLOW, BLACK, 16, 0);
+    lcd_ShowIntNum(70, 260, alarm_hour, 2, YELLOW, BLACK, 16);
+    lcd_ShowIntNum(100, 260, alarm_min, 2, YELLOW, BLACK, 16);
+    lcd_ShowIntNum(130, 260, alarm_sec, 2, YELLOW, BLACK, 16);
+}
+
+void displayTime(){
+	blink_counter++;
+	if(blink_counter >= 10) {
+		blink_counter = 0;
+		blink_state = !blink_state;
+	}
+
+	uint16_t hour_color = GREEN, min_color = GREEN, sec_color = GREEN;
+	uint16_t date_color = YELLOW, month_color = YELLOW, year_color = YELLOW, day_color = YELLOW;
+
+	if((state == MODE_SET_TIME || state == MODE_SET_ALARM || state == MODE_SET_UART) && blink_state) {
+		switch(setting_param) {
+			case PARAM_HOUR: hour_color = BLACK; break;
+			case PARAM_MIN: min_color = BLACK; break;
+			case PARAM_SEC: sec_color = BLACK; break;
+			case PARAM_DATE: date_color = BLACK; break;
+			case PARAM_MONTH: month_color = BLACK; break;
+			case PARAM_YEAR: year_color = BLACK; break;
+			case PARAM_DAY: day_color = BLACK; break;
+		}
+	}
+
+	// Display based on mode
+	if(state == MODE_SET_TIME || state == MODE_SET_UART) {
+		lcd_ShowIntNum(70, 100, temp_hour, 2, hour_color, BLACK, 24);
+		lcd_ShowIntNum(110, 100, temp_min, 2, min_color, BLACK, 24);
+		lcd_ShowIntNum(150, 100, temp_sec, 2, sec_color, BLACK, 24);
+
+		lcd_ShowIntNum(20, 130, temp_day, 2, day_color, BLACK, 24);
+		lcd_ShowIntNum(70, 130, temp_date, 2, date_color, BLACK, 24);
+		lcd_ShowIntNum(110, 130, temp_month, 2, month_color, BLACK, 24);
+		lcd_ShowIntNum(150, 130, temp_year, 2, year_color, BLACK, 24);
+	} else if(state == MODE_SET_ALARM) {
+		lcd_ShowStr(10, 100, "SET ALARM:", MAGENTA, BLACK, 24, 0);
+		lcd_ShowIntNum(70, 130, alarm_hour, 2, hour_color, BLACK, 24);
+		lcd_ShowIntNum(110, 130, alarm_min, 2, min_color, BLACK, 24);
+		lcd_ShowIntNum(150, 130, alarm_sec, 2, sec_color, BLACK, 24);
+	} else {
+		lcd_ShowIntNum(70, 100, ds3231_hours, 2, hour_color, BLACK, 24);
+		lcd_ShowIntNum(110, 100, ds3231_min, 2, min_color, BLACK, 24);
+		lcd_ShowIntNum(150, 100, ds3231_sec, 2, sec_color, BLACK, 24);
+
+		lcd_ShowIntNum(20, 130, ds3231_day, 2, day_color, BLACK, 24);
+		lcd_ShowIntNum(70, 130, ds3231_date, 2, date_color, BLACK, 24);
+		lcd_ShowIntNum(110, 130, ds3231_month, 2, month_color, BLACK, 24);
+		lcd_ShowIntNum(150, 130, ds3231_year, 2, year_color, BLACK, 24);
+
+		displayAlarmTime();
+		checkAlarm();
+	}
+}
+
+//void incrementParameter() {
+//	switch(setting_param) {
+//		case PARAM_HOUR:
+//			if(state == MODE_SET_TIME) temp_hour = (temp_hour + 1) % 24;
+//			else alarm_hour = (alarm_hour + 1) % 24;
+//			break;
+//		case PARAM_MIN:
+//			if(state == MODE_SET_TIME) temp_min = (temp_min + 1) % 60;
+//			else alarm_min = (alarm_min + 1) % 60;
+//			break;
+//		case PARAM_SEC:
+//			if(state == MODE_SET_TIME) temp_sec = (temp_sec + 1) % 60;
+//			else alarm_sec = (alarm_sec + 1) % 60;
+//			break;
+//		case PARAM_DATE:
+//			temp_date = (temp_date % 31) + 1;
+//			break;
+//		case PARAM_MONTH:
+//			temp_month = (temp_month % 12) + 1;
+//			break;
+//		case PARAM_YEAR:
+//			temp_year = (temp_year + 1) % 100;
+//			break;
+//		case PARAM_DAY:
+//			temp_day = (temp_day % 7) + 1;
+//			break;
+//	}
+//}
+
+void handleIncrementButton() {
+	if(button_count[3] >= 1) {
+		button_up_duration++;
+		if(button_count[3] == 1) {	// Single press - increment once
+			switch(setting_param) {
+				case PARAM_HOUR:
+					if(state == MODE_SET_TIME) temp_hour = (temp_hour + 1) % 24;
+					else alarm_hour = (alarm_hour + 1) % 24;
+					break;
+				case PARAM_MIN:
+					if(state == MODE_SET_TIME) temp_min = (temp_min + 1) % 60;
+					else alarm_min = (alarm_min + 1) % 60;
+					break;
+				case PARAM_SEC:
+					if(state == MODE_SET_TIME) temp_sec = (temp_sec + 1) % 60;
+					else alarm_sec = (alarm_sec + 1) % 60;
+					break;
+				case PARAM_DATE:
+					temp_date = (temp_date % 31) + 1;
+					break;
+				case PARAM_MONTH:
+					temp_month = (temp_month % 12) + 1;
+					break;
+				case PARAM_YEAR:
+					temp_year = (temp_year + 1) % 100;
+					break;
+				case PARAM_DAY:
+					temp_day = (temp_day % 7) + 1;
+					break;
+			}
+		}
+		else if(button_up_duration >= 40) { // Held for 2 seconds (40 cycles * 50ms)
+			auto_increment_counter++;
+			if(auto_increment_counter >= 4) { // Auto increment every 200ms (4 cycles)
+				auto_increment_counter = 0;
+				switch(setting_param) {
+					case PARAM_HOUR:
+						if(state == MODE_SET_TIME) temp_hour = (temp_hour + 1) % 24;
+						else alarm_hour = (alarm_hour + 1) % 24;
+						break;
+					case PARAM_MIN:
+						if(state == MODE_SET_TIME) temp_min = (temp_min + 1) % 60;
+						else alarm_min = (alarm_min + 1) % 60;
+						break;
+					case PARAM_SEC:
+						if(state == MODE_SET_TIME) temp_sec = (temp_sec + 1) % 60;
+						else alarm_sec = (alarm_sec + 1) % 60;
+						break;
+					case PARAM_DATE:
+						temp_date = (temp_date % 31) + 1;
+						break;
+					case PARAM_MONTH:
+						temp_month = (temp_month % 12) + 1;
+						break;
+					case PARAM_YEAR:
+						temp_year = (temp_year + 1) % 100;
+						break;
+					case PARAM_DAY:
+						temp_day = (temp_day % 7) + 1;
+						break;
+				}
+			}
+		}
+	} else {
+		button_up_duration = 0;
+		auto_increment_counter = 0;
+	}
+}
+void handleResendRequest() {
+	request_duration ++;
+	if(request_duration >= 100){ // wait for 5 seconds (100 cycles * 50ms)
+		request_counter ++;
+		request_duration = 0;
+		request_flag = 1;
+	}
+	if(request_counter > 3){
+		request_counter = 0;
+		request_duration = 0;
+		request_flag = 0;
+		state = MODE_DISPLAY_TIME;
+		setting_param = PARAM_HOUR;
+		lcd_Clear(BLACK);
+		uart_Rs232SendString("Finish setting !");
+	}
+}
+void fsm_clock() {
+	static uint8_t last_state = 0xFF;
+
+	switch (state) {
+	case INIT:
+		lcd_Clear(BLACK);
+		displayModeIndicator();
+		state = MODE_DISPLAY_TIME;
+		break;
+	case MODE_DISPLAY_TIME:
+		if(isButtonDown()) {
+			state = MODE_SET_TIME;
+			setting_param = PARAM_HOUR;
+			lcd_Clear(BLACK);
+
+			temp_hour = ds3231_hours;
+			temp_min = ds3231_min;
+			temp_sec = ds3231_sec;
+			temp_date = ds3231_date;
+			temp_month = ds3231_month;
+			temp_year = ds3231_year;
+			temp_day = ds3231_day;
+			last_state = 0xFF;
+		}
+
+		if(last_state != state) {
+			displayModeIndicator();
+			last_state = state;
+		}
+
+		displayTime();
+		break;
+	case MODE_SET_TIME:
+		if(isButtonDown()) {
+			state = MODE_SET_ALARM;
+			setting_param = PARAM_HOUR;
+			lcd_Clear(BLACK);
+			last_state = 0xFF;
+		}
+
+		if(last_state != state) {
+			displayModeIndicator();
+			last_state = state;
+		}
+
+		handleIncrementButton();
+
+		if(button_count[12] == 1) {
+			setting_param++;
+
+			if(setting_param > PARAM_DAY) {
+				ds3231_Write(ADDRESS_HOUR, temp_hour);
+				ds3231_Write(ADDRESS_MIN, temp_min);
+				ds3231_Write(ADDRESS_SEC, temp_sec);
+				ds3231_Write(ADDRESS_DATE, temp_date);
+				ds3231_Write(ADDRESS_MONTH, temp_month);
+				ds3231_Write(ADDRESS_YEAR, temp_year);
+				ds3231_Write(ADDRESS_DAY, temp_day);
+
+				state = MODE_DISPLAY_TIME;
+				setting_param = PARAM_HOUR;
+				lcd_Clear(BLACK);
+				last_state = 0xFF;
+			}
+		}
+
+		displayTime();
+		break;
+
+	case MODE_SET_ALARM:
+
+		if(last_state != state) {
+			displayModeIndicator();
+			last_state = state;
+		}
+
+		handleIncrementButton();
+
+		if(button_count[12] == 1) {
+			setting_param++;
+
+			if(setting_param > PARAM_SEC) {
+				state = MODE_DISPLAY_TIME;
+				setting_param = PARAM_HOUR;
+				lcd_Clear(BLACK);
+				last_state = 0xFF;
+			}
+		}
+
+		displayTime();
+
+		if(isButtonDown()) {
+			state = MODE_SET_UART;
+			setting_param = PARAM_HOUR;
+			lcd_Clear(BLACK);
+			last_state = 0xFF;
+		}
+		break;
+	case MODE_SET_UART:
+		if(isButtonDown()) {
+			state = MODE_DISPLAY_TIME;
+			setting_param = PARAM_HOUR;
+			lcd_Clear(BLACK);
+			last_state = 0xFF;
+		}
+
+		if(last_state != state) {
+			mode_str = "MODE: UART updating hours";
+			uart_Rs232SendString("Type hour value: ");
+			last_state = state;
+		}
+		handleResendRequest();
+		displayModeIndicator();
+		set_time_Uart();
+		displayTime();
+		if(isButtonDown()) {
+			state = MODE_DISPLAY_TIME;
+			setting_param = PARAM_HOUR;
+			lcd_Clear(BLACK);
+			last_state = 0xFF;
+		}
+		break;
+
+	}
+}
 void test_Uart(){
 	if(button_count[12] == 1){
 		uart_Rs232SendNum(ds3231_hours);
@@ -537,6 +930,324 @@ void test_Uart(){
 		uart_Rs232SendNum(ds3231_sec);
 		uart_Rs232SendString("\n");
 	}
+}
+int get_char_Uart(void) {
+	if(bf_head == bf_tail) return -1;
+    uint8_t c = buffer[bf_tail];
+    bf_tail = (bf_tail + 1) % BUFFER_SIZE;
+    return c;
+}
+void handle_Uart(){
+	static uint8_t cmd [32];
+	static uint8_t idx = 0;
+    int c;
+    uint8_t ch;
+    if (uart_flag) {
+    	while((c = get_char_Uart()) != -1){
+    		ch = (uint8_t)c;
+			HAL_UART_Transmit(&huart1, &ch, 1, 10);
+			if (ch == '\n') {
+				cmd[idx] = '\0';
+				idx = 0;
+//				uart_Rs232SendString((uint8_t*)"\n");
+				if (strcmp((char*)cmd, "hour") == 0) {
+					uart_Rs232SendString((uint8_t*)"Hour:");
+					uart_Rs232SendNum(ds3231_hours);
+					uart_Rs232SendString((uint8_t*)"\n");
+				} else if (strcmp((char*)cmd, "minute") == 0) {
+					uart_Rs232SendString((uint8_t*)"Minute:");
+					uart_Rs232SendNum(ds3231_min);
+					uart_Rs232SendString((uint8_t*)"\n");
+				} else if (strcmp((char*)cmd, "second") == 0) {
+					uart_Rs232SendString((uint8_t*)"Second:");
+					uart_Rs232SendNum(ds3231_sec);
+					uart_Rs232SendString((uint8_t*)"\n");
+				} else {
+					uart_Rs232SendString((uint8_t*)"Unknown command!!!");
+					uart_Rs232SendString((uint8_t*)"\n");
+				}
+			}
+			else if(ch == '\r') {
+				continue;
+			}
+			else if(ch == 0x08 || ch == 0x7F) {
+				idx = (idx > 0)? idx - 1 : idx;
+			}
+			else if (idx < sizeof(cmd) - 1) {
+				cmd[idx] = ch;
+				idx ++;
+			}
+    	}
+        uart_flag = 0; // reset cờ sau khi xử lý xong
+    }
+}
+void set_time_Uart(){
+	static uint8_t cmd [32];
+	static uint8_t idx = 0;
+    int c;
+    int time = 0;
+    uint8_t* endptr;
+    uint8_t ch;
+	switch(setting_param) {
+		case PARAM_HOUR:
+			mode_str = "MODE: UART updating hours";
+			if(request_flag != 0) {
+				uart_Rs232SendString("\nType hour value: ");
+				request_flag = 0;
+				idx = 0;
+				cmd[idx] = '\0';
+			}
+			break;
+		case PARAM_MIN:
+			mode_str = "MODE: UART updating minute";
+			if(request_flag != 0) {
+				uart_Rs232SendString("\nType minute value: ");
+				request_flag = 0;
+				idx = 0;
+				cmd[idx] = '\0';
+			}
+			break;
+		case PARAM_SEC:
+			mode_str = "MODE: UART updating second";
+			if(request_flag != 0) {
+				uart_Rs232SendString("\nType second value: ");
+				request_flag = 0;
+				idx = 0;
+				cmd[idx] = '\0';
+			}
+			break;
+		case PARAM_DATE:
+			mode_str = "MODE: UART updating date";
+			if(request_flag != 0) {
+				uart_Rs232SendString("\nType date value: ");
+				request_flag = 0;
+				idx = 0;
+				cmd[idx] = '\0';
+			}
+			break;
+		case PARAM_MONTH:
+			mode_str = "MODE: UART updating month";
+			if(request_flag != 0) {
+				uart_Rs232SendString("\nType month value: ");
+				request_flag = 0;
+				idx = 0;
+				cmd[idx] = '\0';
+			}
+			break;
+		case PARAM_YEAR:
+			mode_str = "MODE: UART updating year";
+			if(request_flag != 0) {
+				uart_Rs232SendString("\nType year value: ");
+				request_flag = 0;
+				idx = 0;
+				cmd[idx] = '\0';
+			}
+			break;
+		case PARAM_DAY:
+			mode_str = "MODE: UART updating day";
+			if(request_flag != 0) {
+				uart_Rs232SendString("\nType day value: ");
+				request_flag = 0;
+				idx = 0;
+				cmd[idx] = '\0';
+			}
+			break;
+	}
+
+    if (uart_flag) {
+    	while((c = get_char_Uart()) != -1){
+    		ch = (uint8_t)c;
+			HAL_UART_Transmit(&huart1, &ch, 1, 10);
+			if (ch == '\n') {
+				cmd[idx] = '\0';
+				idx = 0;
+//				uart_Rs232SendString((uint8_t*)"\n");
+				time = strtol((char*)cmd, &endptr, 10);
+				switch(setting_param) {
+					case PARAM_HOUR:
+//						mode_str = "MODE: UART updating hours";
+						if (*endptr != '\0' || time > 23 || time < 0) {
+							// có ký tự không hợp lệ
+							uart_Rs232SendString((uint8_t*)"Invalid value!!!");
+							uart_Rs232SendString((uint8_t*)"\n");
+							uart_Rs232SendString("Type hour value: ");
+						}
+						else if(cmd[0] == '\0'){
+							setting_param ++;
+							uart_Rs232SendString("Type minute value: ");
+						}
+						else{
+							uart_Rs232SendString((uint8_t*)"Hour is set to: ");
+							uart_Rs232SendNum(time);
+							uart_Rs232SendString((uint8_t*)"\n");
+							temp_hour = time;
+							setting_param ++;
+							uart_Rs232SendString("Type minute value: ");
+						}
+						break;
+					case PARAM_MIN:
+//						mode_str = "MODE: UART updating minute";
+						if(*endptr != '\0' || time > 59 || time < 0){
+							uart_Rs232SendString((uint8_t*)"Invalid number!!!");
+							uart_Rs232SendString((uint8_t*)"\n");
+							uart_Rs232SendString("Type minute value: ");
+						}
+						else if(cmd[0] == '\0'){
+							setting_param ++;
+							uart_Rs232SendString("Type second value: ");
+						}
+						else{
+							uart_Rs232SendString((uint8_t*)"Minute is set to: ");
+							uart_Rs232SendNum(time);
+							uart_Rs232SendString((uint8_t*)"\n");
+							temp_min = time;
+							setting_param ++;
+							uart_Rs232SendString("Type second value: ");
+						}
+						break;
+					case PARAM_SEC:
+//						mode_str = "MODE: UART updating second";
+						if(*endptr != '\0' || time > 59 || time < 0){
+							uart_Rs232SendString((uint8_t*)"Invalid number!!!");
+							uart_Rs232SendString((uint8_t*)"\n");
+							uart_Rs232SendString("Type second value: ");
+						}
+						else if(cmd[0] == '\0'){
+							setting_param ++;
+							uart_Rs232SendString("Type date value: ");
+						}
+						else{
+							uart_Rs232SendString((uint8_t*)"Second is set to: ");
+							uart_Rs232SendNum(time);
+							uart_Rs232SendString((uint8_t*)"\n");
+							temp_sec = time;
+							setting_param ++;
+							uart_Rs232SendString("Type date value: ");
+						}
+						break;
+					case PARAM_DATE:
+//						mode_str = "MODE: UART updating date";
+						if(*endptr != '\0' || time > 31 || time < 0){
+							uart_Rs232SendString((uint8_t*)"Invalid number!!!");
+							uart_Rs232SendString((uint8_t*)"\n");
+							uart_Rs232SendString("Type date value: ");
+						}
+						else if(cmd[0] == '\0'){
+							setting_param ++;
+							uart_Rs232SendString("Type month value: ");
+						}
+						else{
+							uart_Rs232SendString((uint8_t*)"Date is set to: ");
+							uart_Rs232SendNum(time);
+							uart_Rs232SendString((uint8_t*)"\n");
+							temp_date = time;
+							setting_param ++;
+							uart_Rs232SendString("Type month value: ");
+						}
+						break;
+					case PARAM_MONTH:
+//						mode_str = "MODE: UART updating month";
+						if(*endptr != '\0' || time > 12 || time < 0){
+							uart_Rs232SendString((uint8_t*)"Invalid number!!!");
+							uart_Rs232SendString((uint8_t*)"\n");
+							uart_Rs232SendString("Type month value: ");
+						}
+						else if(cmd[0] == '\0'){
+							setting_param ++;
+							uart_Rs232SendString("Type year value: ");
+						}
+						else{
+							uart_Rs232SendString((uint8_t*)"Month is set to: ");
+							uart_Rs232SendNum(time);
+							uart_Rs232SendString((uint8_t*)"\n");
+							temp_month = time;
+							setting_param ++;
+							uart_Rs232SendString("Type year value: ");
+						}
+						break;
+					case PARAM_YEAR:
+//						mode_str = "MODE: UART updating year";
+						if(*endptr != '\0' || time > 99 || time < 0){
+							uart_Rs232SendString((uint8_t*)"Invalid number!!!");
+							uart_Rs232SendString((uint8_t*)"\n");
+							uart_Rs232SendString("Type year value: ");
+						}
+						else if(cmd[0] == '\0'){
+							setting_param ++;
+							uart_Rs232SendString("Type day value: ");
+						}
+						else{
+							uart_Rs232SendString((uint8_t*)"Year is set to :");
+							uart_Rs232SendNum(time);
+							uart_Rs232SendString((uint8_t*)"\n");
+							temp_year = time;
+							setting_param ++;
+							uart_Rs232SendString("Type day value: ");
+						}
+						break;
+					case PARAM_DAY:
+//						mode_str = "MODE: UART updating day";
+						if(*endptr != '\0' || time > 7 || time < 0){
+							uart_Rs232SendString((uint8_t*)"Invalid number!!!");
+							uart_Rs232SendString((uint8_t*)"\n");
+							uart_Rs232SendString("Type day value: ");
+						}
+						else if(cmd[0] == '\0'){
+							ds3231_Write(ADDRESS_HOUR, temp_hour);
+							ds3231_Write(ADDRESS_MIN, temp_min);
+							ds3231_Write(ADDRESS_SEC, temp_sec);
+							ds3231_Write(ADDRESS_DATE, temp_date);
+							ds3231_Write(ADDRESS_MONTH, temp_month);
+							ds3231_Write(ADDRESS_YEAR, temp_year);
+							ds3231_Write(ADDRESS_DAY, temp_day);
+
+							state = MODE_DISPLAY_TIME;
+							setting_param = PARAM_HOUR;
+							lcd_Clear(BLACK);
+							uart_Rs232SendString("Finish setting !");
+						}
+						else{
+							uart_Rs232SendString((uint8_t*)"Day is set to: ");
+							uart_Rs232SendNum(time);
+							uart_Rs232SendString((uint8_t*)"\n");
+							temp_day = time;
+							ds3231_Write(ADDRESS_HOUR, temp_hour);
+							ds3231_Write(ADDRESS_MIN, temp_min);
+							ds3231_Write(ADDRESS_SEC, temp_sec);
+							ds3231_Write(ADDRESS_DATE, temp_date);
+							ds3231_Write(ADDRESS_MONTH, temp_month);
+							ds3231_Write(ADDRESS_YEAR, temp_year);
+							ds3231_Write(ADDRESS_DAY, temp_day);
+
+							state = MODE_DISPLAY_TIME;
+							setting_param = PARAM_HOUR;
+							lcd_Clear(BLACK);
+							uart_Rs232SendString("Finish setting !");
+						}
+						break;
+				}
+			}
+			else if(ch == '\r') {
+				continue;
+			}
+			else if(ch == 0x08 || ch == 0x7F) {
+				idx = (idx > 0)? idx - 1 : idx;
+			}
+			else if (idx < sizeof(cmd) - 1) {
+				time = strtol((char*)cmd, &endptr, 10);
+				if (*endptr != '\0') {
+				    // có ký tự không hợp lệ
+				}
+				cmd[idx] = ch;
+				idx ++;
+			}
+    	}
+    	request_counter = 0;
+    	request_flag = 0;
+    	request_duration = 0;
+        uart_flag = 0; // reset cờ sau khi xử lý xong
+    }
+
 }
 /* USER CODE END 4 */
 

@@ -467,9 +467,6 @@ void test_button(){
 	}
 }
 
-uint8_t cnt_2 = 0;
-uint8_t cnt_3 = 0;
-uint8_t cnt_4 = 0;
 
 void test_lcd(){
 	lcd_Fill(0, 0, 240, 20, BLUE);
@@ -487,11 +484,6 @@ void lcd_mod2() {
 	lcd_ShowStr(55, 30, "- Mode 2 -", WHITE, RED, 24, 0);
 	lcd_ShowStr(50, 60, "Modify RED", WHITE, RED, 24, 0);
 	lcd_ShowPicture(80, 220, 90, 90, gImage_logo);
-	if (cnt_2 == 0)
-		lcd_DrawCircle(60, 140, RED, 40, 1);
-	else if (cnt_2 == 10)
-		lcd_DrawCircle(60, 140, WHITE, 40, 1);
-	cnt_2 = (cnt_2 + 1) % 20;
 }
 
 void lcd_mod3() {
@@ -500,11 +492,6 @@ void lcd_mod3() {
 	lcd_ShowStr(55, 30, "- Mode 3 -", WHITE, GREEN, 24, 0);
 	lcd_ShowStr(50, 60, "Modify GREEN", WHITE, GREEN, 24, 0);
 	lcd_ShowPicture(80, 220, 90, 90, gImage_logo);
-	if (cnt_3 == 0)
-		lcd_DrawCircle(60, 140, GREEN, 40, 1);
-	else if (cnt_3 == 10)
-		lcd_DrawCircle(60, 140, WHITE, 40, 1);
-	cnt_3 = (cnt_3 + 1) % 20;
 }
 
 void lcd_mod4() {
@@ -512,13 +499,7 @@ void lcd_mod4() {
 	lcd_StrCenter(0, 2, "Hello World !!!", RED, BLUE, 16, 1);
 	lcd_ShowStr(55, 30, "- Mode 4 -", WHITE, YELLOW, 24, 0);
 	lcd_ShowStr(50, 60, "Modify YELLOW", WHITE, YELLOW, 24, 0);
-	lcd_DrawCircle(60, 140, YELLOW, 40, 1);
 	lcd_ShowPicture(80, 220, 90, 90, gImage_logo);
-	if (cnt_4 == 0)
-		lcd_DrawCircle(60, 140, GREEN, 40, 1);
-	else if (cnt_4 == 10)
-		lcd_DrawCircle(60, 140, WHITE, 40, 1);
-	cnt_4 = (cnt_4 + 1) % 20;
 }
 
 int status = INIT;
@@ -541,6 +522,7 @@ int TIME_RED_tmp = 0;
 int TIME_YELLOW_tmp = 0;
 int TIME_GREEN_tmp = 0;
 
+uint8_t cnt = 0;
 
 void fsm_traffic_light_run() {
 	switch (status) {
@@ -561,14 +543,16 @@ void fsm_traffic_light_run() {
 			status = MOD_RED;
 			value = TIME_RED;
 			lcd_Clear(WHITE);
+			lcd_mod2();
+			cnt = 0;
 		}
 
-		if (count_RG <= 40) {
+		if (count_RG <= TIME_RG) {
 			status = RED_YELLOW;
 			count_RY = TIME_RG;
 			test_lcd();
 		}
-		else if (count_RG % 20 == 0) {
+		else {
 			lcd_ShowIntNum(38, 125, tmp_R, 2, WHITE, RED, 32);
 			lcd_ShowIntNum(136, 125, tmp_G, 2, WHITE, GREEN, 32);
 		}
@@ -583,6 +567,8 @@ void fsm_traffic_light_run() {
 			status = MOD_RED;
 			value = TIME_RED;
 			lcd_Clear(WHITE);
+			lcd_mod2();
+			cnt = 0;
 		}
 
 		if (count_RY <= 0) {
@@ -590,7 +576,7 @@ void fsm_traffic_light_run() {
 			count_RG = TIME_RED * 20;
 			test_lcd();
 		}
-		else if (count_RY % 20 == 0) {
+		else {
 			lcd_ShowIntNum(38, 125, tmp_R, 2, WHITE, RED, 32);
 			lcd_ShowIntNum(136, 125, tmp_R, 2, WHITE, YELLOW, 32);
 		}
@@ -606,14 +592,16 @@ void fsm_traffic_light_run() {
 			status = MOD_RED;
 			value = TIME_RED;
 			lcd_Clear(WHITE);
+			lcd_mod2();
+			cnt = 0;
 		}
 
-		if (count_RG <= 40) {
+		if (count_RG <= TIME_RG) {
 			status = YELLOW_RED;
 			count_RY = TIME_RG;
 			test_lcd();
 		}
-		else if (count_RG % 20 == 0) {
+		else {
 			lcd_ShowIntNum(38, 125, tmp_G, 2, WHITE, GREEN, 32);
 			lcd_ShowIntNum(136, 125, tmp_R, 2, WHITE, RED, 32);
 		}
@@ -628,6 +616,8 @@ void fsm_traffic_light_run() {
 			status = MOD_RED;
 			value = TIME_RED;
 			lcd_Clear(WHITE);
+			lcd_mod2();
+			cnt = 0;
 		}
 
 		if (count_RY <= 0) {
@@ -635,14 +625,19 @@ void fsm_traffic_light_run() {
 			count_RG = TIME_RED * 20;
 			test_lcd();
 		}
-		else if (count_RY % 20 == 0) {
+		else {
 			lcd_ShowIntNum(38, 125, tmp_R, 2, WHITE, YELLOW, 32);
 			lcd_ShowIntNum(136, 125, tmp_R, 2, WHITE, RED, 32);
 		}
 		--count_RY;
 		break;
 	case MOD_RED:
-		lcd_mod2();
+		if (cnt == 0)
+			lcd_DrawCircle(60, 140, RED, 40, 1);
+		else if (cnt == 10)
+			lcd_DrawCircle(60, 140, WHITE, 40, 1);
+		cnt = (cnt + 1) % 20;
+
 		if (button_count[13] == 1)
 			value = (value >= 99) ? 1 : value + 1;
 		else if (button_count[14] == 1)
@@ -651,11 +646,18 @@ void fsm_traffic_light_run() {
 			status = MOD_GREEN;
 			value = TIME_GREEN;
 			lcd_Clear(WHITE);
+			lcd_mod3();
+			cnt = 0;
 		}
 		lcd_ShowIntNum(136, 125, value, 2, WHITE, RED, 32);
 		break;
 	case MOD_GREEN:
-		lcd_mod3();
+		if (cnt == 0)
+			lcd_DrawCircle(60, 140, GREEN, 40, 1);
+		else if (cnt == 10)
+			lcd_DrawCircle(60, 140, WHITE, 40, 1);
+		cnt = (cnt + 1) % 20;
+
 		if (button_count[13] == 1)
 			value = (value >= 99) ? 1 : value + 1;
 		else if (button_count[14] == 1)
@@ -664,11 +666,17 @@ void fsm_traffic_light_run() {
 			status = MOD_YELLOW;
 			value = TIME_YELLOW;
 			lcd_Clear(WHITE);
+			lcd_mod4();
 		}
 		lcd_ShowIntNum(136, 125, value, 2, WHITE, GREEN, 32);
 		break;
 	case MOD_YELLOW:
-		lcd_mod4();
+		if (cnt == 0)
+			lcd_DrawCircle(60, 140, YELLOW, 40, 1);
+		else if (cnt == 10)
+			lcd_DrawCircle(60, 140, WHITE, 40, 1);
+		cnt = (cnt + 1) % 20;
+
 		if (button_count[13] == 1)
 			value = (value >= 99) ? 1 : value + 1;
 		else if (button_count[14] == 1) {
