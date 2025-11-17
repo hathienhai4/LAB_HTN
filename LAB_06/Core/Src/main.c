@@ -28,6 +28,9 @@
 #include "lcd.h"
 #include "picture.h"
 #include "ds3231.h"
+#include "sensor.h"
+#include "buzzer.h"
+#include "uart.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -37,19 +40,11 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define INIT				0
-
-#define MODE_DISPLAY_TIME 	2
-#define MODE_SET_TIME 		3
-#define MODE_SET_ALARM 		4
-
-#define PARAM_HOUR 			10
-#define PARAM_MIN 			11
-#define PARAM_SEC 			12
-#define PARAM_DATE 			13
-#define PARAM_MONTH 		14
-#define PARAM_YEAR 			15
-#define PARAM_DAY 			16
+#define MAX_SAMPLES 20
+#define CHART_X 10
+#define CHART_Y 150
+#define CHART_WIDTH 220
+#define CHART_HEIGHT 130
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -58,40 +53,22 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+DMA_HandleTypeDef hdma_adc1;
+
 I2C_HandleTypeDef hi2c1;
 
 SPI_HandleTypeDef hspi1;
 
 TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim13;
+
+UART_HandleTypeDef huart1;
 
 SRAM_HandleTypeDef hsram1;
 
 /* USER CODE BEGIN PV */
-uint8_t count_led_debug = 0;
 
-// FSM variables
-uint8_t setting_param = PARAM_HOUR;
-uint8_t blink_state = 0;
-uint8_t blink_counter = 0;
-
-// Temporary time values for setting
-uint8_t temp_hour = 0;
-uint8_t temp_min = 0;
-uint8_t temp_sec = 0;
-uint8_t temp_date = 0;
-uint8_t temp_month = 0;
-uint8_t temp_year = 0;
-uint8_t temp_day = 0;
-
-// Alarm values
-uint8_t alarm_hour = 0;
-uint8_t alarm_min = 0;
-uint8_t alarm_sec = 0;
-uint8_t alarm_triggered = 0;
-
-// Button press duration tracking
-uint16_t button_up_duration = 0;
-uint16_t auto_increment_counter = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -100,17 +77,18 @@ static void MX_GPIO_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_FSMC_Init(void);
+static void MX_DMA_Init(void);
+static void MX_ADC1_Init(void);
 static void MX_I2C1_Init(void);
+static void MX_TIM13_Init(void);
+static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 void system_init();
 void test_LedDebug();
-void displayTime();
-void updateTime();
-void displayModeIndicator();
-void displayAlarmTime();
-void checkAlarm();
-void displayTime();
-void fsm_clock();
+void test_Buzzer();
+void test_Adc();
+void displayTimeOn7Seg();
+void drawPowerChart();
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -149,7 +127,11 @@ int main(void)
   MX_SPI1_Init();
   MX_TIM2_Init();
   MX_FSMC_Init();
+  MX_DMA_Init();
+  MX_ADC1_Init();
   MX_I2C1_Init();
+  MX_TIM13_Init();
+  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
   system_init();
   /* USER CODE END 2 */
@@ -157,15 +139,22 @@ int main(void)
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   lcd_Clear(BLACK);
-  updateTime();
+  lcd_ShowStr(60, 10, "Environment Monitor", WHITE, BLACK, 16, 0);
   while (1)
   {
 	  while(!flag_timer2);
 	  flag_timer2 = 0;
 	  button_Scan();
-	  ds3231_ReadTime();
-//	  displayTime();
-	  fsm_clock();
+	  led7_Scan();
+	  test_LedDebug();
+	  
+	  // ===== Bai tap 1: Environmental Monitoring =====
+	  displayTimeOn7Seg();
+	  test_Adc();
+	  test_Buzzer();
+	  
+	  // ===== Bai tap 2: Power Chart (15s sampling) =====
+	  drawPowerChart();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -215,6 +204,88 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV2;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.ScanConvMode = ENABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 5;
+  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_8;
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_9;
+  sConfig.Rank = 2;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_10;
+  sConfig.Rank = 3;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_11;
+  sConfig.Rank = 4;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_12;
+  sConfig.Rank = 5;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+
 }
 
 /**
@@ -335,6 +406,101 @@ static void MX_TIM2_Init(void)
 }
 
 /**
+  * @brief TIM13 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM13_Init(void)
+{
+
+  /* USER CODE BEGIN TIM13_Init 0 */
+
+  /* USER CODE END TIM13_Init 0 */
+
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM13_Init 1 */
+
+  /* USER CODE END TIM13_Init 1 */
+  htim13.Instance = TIM13;
+  htim13.Init.Prescaler = 840-1;
+  htim13.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim13.Init.Period = 100-1;
+  htim13.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim13.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim13) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim13) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim13, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM13_Init 2 */
+
+  /* USER CODE END TIM13_Init 2 */
+  HAL_TIM_MspPostInit(&htim13);
+
+}
+
+/**
+  * @brief USART1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART1_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART1_Init 0 */
+
+  /* USER CODE END USART1_Init 0 */
+
+  /* USER CODE BEGIN USART1_Init 1 */
+
+  /* USER CODE END USART1_Init 1 */
+  huart1.Instance = USART1;
+  huart1.Init.BaudRate = 115200;
+  huart1.Init.WordLength = UART_WORDLENGTH_8B;
+  huart1.Init.StopBits = UART_STOPBITS_1;
+  huart1.Init.Parity = UART_PARITY_NONE;
+  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART1_Init 2 */
+
+  /* USER CODE END USART1_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA2_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA2_Stream0_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -346,11 +512,12 @@ static void MX_GPIO_Init(void)
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOE_CLK_ENABLE();
   __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOF_CLK_ENABLE();
   __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOG_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOE, DEBUG_LED_Pin|OUTPUT_Y0_Pin|OUTPUT_Y1_Pin, GPIO_PIN_RESET);
@@ -479,47 +646,25 @@ static void MX_FSMC_Init(void)
 
 /* USER CODE BEGIN 4 */
 void system_init(){
-	  HAL_GPIO_WritePin(OUTPUT_Y0_GPIO_Port, OUTPUT_Y0_Pin, 0);
-	  HAL_GPIO_WritePin(OUTPUT_Y1_GPIO_Port, OUTPUT_Y1_Pin, 0);
-	  HAL_GPIO_WritePin(DEBUG_LED_GPIO_Port, DEBUG_LED_Pin, 0);
 	  timer_init();
-	  led7_init();
 	  button_init();
 	  lcd_init();
+	  sensor_init();
 	  ds3231_init();
+	  uart_init_rs232();
+	  buzzer_init();
 	  setTimer2(50);
+	  setTimer3(1000); // For 1s periodic tasks
+	  setTimer4(15000); // For 15s sampling (Exercise 2)
 }
+
+uint8_t count_led_debug = 0;
 
 void test_LedDebug(){
 	count_led_debug = (count_led_debug + 1)%20;
 	if(count_led_debug == 0){
 		HAL_GPIO_TogglePin(DEBUG_LED_GPIO_Port, DEBUG_LED_Pin);
 	}
-}
-
-void test_7seg(){
-	led7_SetDigit(0, 0, 0);
-	led7_SetDigit(5, 1, 0);
-	led7_SetDigit(4, 2, 0);
-	led7_SetDigit(7, 3, 0);
-}
-void test_button(){
-	for(int i = 0; i < 16; i++){
-		if(button_count[i] == 1){
-			led7_SetDigit(i/10, 2, 0);
-			led7_SetDigit(i%10, 3, 0);
-		}
-	}
-}
-
-void updateTime(){
-	ds3231_Write(ADDRESS_YEAR, 25);
-	ds3231_Write(ADDRESS_MONTH, 11);
-	ds3231_Write(ADDRESS_DATE, 03);
-	ds3231_Write(ADDRESS_DAY, 2);
-	ds3231_Write(ADDRESS_HOUR, 17);
-	ds3231_Write(ADDRESS_MIN, 45);
-	ds3231_Write(ADDRESS_SEC, 30);
 }
 
 uint8_t isButtonUp()
@@ -529,6 +674,7 @@ uint8_t isButtonUp()
     else
         return 0;
 }
+
 uint8_t isButtonDown()
 {
     if (button_count[7] == 1)
@@ -537,296 +683,237 @@ uint8_t isButtonDown()
         return 0;
 }
 
-uint8_t state = INIT;
-
-void displayModeIndicator() {
-    lcd_Fill(0, 0, 240, 20, BLACK);
-    switch(state) {
-        case MODE_DISPLAY_TIME:
-            lcd_ShowStr(10, 5, "MODE: DISPLAY TIME", WHITE, BLACK, 16, 0);
-            break;
-        case MODE_SET_TIME:
-            lcd_ShowStr(10, 5, "MODE: SET TIME", CYAN, BLACK, 16, 0);
-            break;
-        case MODE_SET_ALARM:
-            lcd_ShowStr(10, 5, "MODE: SET ALARM", MAGENTA, BLACK, 16, 0);
-            break;
-    }
+uint8_t isButtonRight()
+{
+    if (button_count[11] == 1)
+        return 1;
+    else
+        return 0;
 }
 
-void checkAlarm() {
-    if(alarm_hour == ds3231_hours && alarm_min == ds3231_min && alarm_sec == ds3231_sec)
-        if(!alarm_triggered)
-            alarm_triggered = 1;
-    
-    if(alarm_triggered) {
-        lcd_Fill(0, 180, 240, 220, RED);
-        lcd_ShowStr(40, 190, "*** ALARM ***", WHITE, RED, 24, 0);
-        
-        for(int i = 0; i < 16; i++) {
-            if(button_count[i] == 1) {
-                alarm_triggered = 0;
-                lcd_Fill(0, 180, 240, 220, BLACK);
-                break;
-            }
-        }
-    }
+uint8_t count_adc = 0;
+
+// Calculate power consumption in mW
+float getPowerConsumption() {
+	return sensor_GetVoltage() * sensor_GetCurrent();
 }
 
-void displayAlarmTime() {
-    lcd_ShowStr(10, 260, "ALARM:", YELLOW, BLACK, 16, 0);
-    lcd_ShowIntNum(70, 260, alarm_hour, 2, YELLOW, BLACK, 16);
-    lcd_ShowIntNum(100, 260, alarm_min, 2, YELLOW, BLACK, 16);
-    lcd_ShowIntNum(130, 260, alarm_sec, 2, YELLOW, BLACK, 16);
+// Get humidity from potentiometer (0-100%)
+float getHumidity() {
+	uint16_t pot_value = sensor_GetPotentiometer();
+	// Map ADC value (0-4095) to humidity (0-100%)
+	return (pot_value * 100.0f) / 4095.0f;
 }
 
-void displayTime(){
-	blink_counter++;
-	if(blink_counter >= 10) {
-		blink_counter = 0;
-		blink_state = !blink_state;
-	}
-	
-	uint16_t hour_color = GREEN, min_color = GREEN, sec_color = GREEN;
-	uint16_t date_color = YELLOW, month_color = YELLOW, year_color = YELLOW, day_color = YELLOW;
-	
-	if((state == MODE_SET_TIME || state == MODE_SET_ALARM) && blink_state) {
-		switch(setting_param) {
-			case PARAM_HOUR: hour_color = BLACK; break;
-			case PARAM_MIN: min_color = BLACK; break;
-			case PARAM_SEC: sec_color = BLACK; break;
-			case PARAM_DATE: date_color = BLACK; break;
-			case PARAM_MONTH: month_color = BLACK; break;
-			case PARAM_YEAR: year_color = BLACK; break;
-			case PARAM_DAY: day_color = BLACK; break;
-		}
-	}
-	
-	// Display based on mode
-	if(state == MODE_SET_TIME) {
-		lcd_ShowIntNum(70, 100, temp_hour, 2, hour_color, BLACK, 24);
-		lcd_ShowIntNum(110, 100, temp_min, 2, min_color, BLACK, 24);
-		lcd_ShowIntNum(150, 100, temp_sec, 2, sec_color, BLACK, 24);
-		
-		lcd_ShowIntNum(20, 130, temp_day, 2, day_color, BLACK, 24);
-		lcd_ShowIntNum(70, 130, temp_date, 2, date_color, BLACK, 24);
-		lcd_ShowIntNum(110, 130, temp_month, 2, month_color, BLACK, 24);
-		lcd_ShowIntNum(150, 130, temp_year, 2, year_color, BLACK, 24);
-	} else if(state == MODE_SET_ALARM) {
-		lcd_ShowStr(10, 100, "SET ALARM:", MAGENTA, BLACK, 24, 0);
-		lcd_ShowIntNum(70, 130, alarm_hour, 2, hour_color, BLACK, 24);
-		lcd_ShowIntNum(110, 130, alarm_min, 2, min_color, BLACK, 24);
-		lcd_ShowIntNum(150, 130, alarm_sec, 2, sec_color, BLACK, 24);
+// Classify light level
+const char* getLightLevel() {
+	uint16_t light = sensor_GetLight();
+	// Threshold at 2000 (adjustable based on sensor)
+	if (light > 2000) {
+		return "Strong";
 	} else {
-		lcd_ShowIntNum(70, 100, ds3231_hours, 2, hour_color, BLACK, 24);
-		lcd_ShowIntNum(110, 100, ds3231_min, 2, min_color, BLACK, 24);
-		lcd_ShowIntNum(150, 100, ds3231_sec, 2, sec_color, BLACK, 24);
-		
-		lcd_ShowIntNum(20, 130, ds3231_day, 2, day_color, BLACK, 24);
-		lcd_ShowIntNum(70, 130, ds3231_date, 2, date_color, BLACK, 24);
-		lcd_ShowIntNum(110, 130, ds3231_month, 2, month_color, BLACK, 24);
-		lcd_ShowIntNum(150, 130, ds3231_year, 2, year_color, BLACK, 24);
-		
-		displayAlarmTime();
-		checkAlarm();
+		return "Weak";
 	}
 }
 
-void incrementParameter() {
-	switch(setting_param) {
-		case PARAM_HOUR:
-			if(state == MODE_SET_TIME) temp_hour = (temp_hour + 1) % 24;
-			else alarm_hour = (alarm_hour + 1) % 24;
-			break;
-		case PARAM_MIN:
-			if(state == MODE_SET_TIME) temp_min = (temp_min + 1) % 60;
-			else alarm_min = (alarm_min + 1) % 60;
-			break;
-		case PARAM_SEC:
-			if(state == MODE_SET_TIME) temp_sec = (temp_sec + 1) % 60;
-			else alarm_sec = (alarm_sec + 1) % 60;
-			break;
-		case PARAM_DATE:
-			temp_date = (temp_date % 31) + 1;
-			break;
-		case PARAM_MONTH:
-			temp_month = (temp_month % 12) + 1;
-			break;
-		case PARAM_YEAR:
-			temp_year = (temp_year + 1) % 100;
-			break;
-		case PARAM_DAY:
-			temp_day = (temp_day % 7) + 1;
-			break;
-	}
-}
-
-void handleIncrementButton() {
-	if(button_count[3] >= 1) {
-		button_up_duration++;
-		if(button_count[3] == 1) {	// Single press - increment once
-			switch(setting_param) {
-				case PARAM_HOUR:
-					if(state == MODE_SET_TIME) temp_hour = (temp_hour + 1) % 24;
-					else alarm_hour = (alarm_hour + 1) % 24;
-					break;
-				case PARAM_MIN:
-					if(state == MODE_SET_TIME) temp_min = (temp_min + 1) % 60;
-					else alarm_min = (alarm_min + 1) % 60;
-					break;
-				case PARAM_SEC:
-					if(state == MODE_SET_TIME) temp_sec = (temp_sec + 1) % 60;
-					else alarm_sec = (alarm_sec + 1) % 60;
-					break;
-				case PARAM_DATE:
-					temp_date = (temp_date % 31) + 1;
-					break;
-				case PARAM_MONTH:
-					temp_month = (temp_month % 12) + 1;
-					break;
-				case PARAM_YEAR:
-					temp_year = (temp_year + 1) % 100;
-					break;
-				case PARAM_DAY:
-					temp_day = (temp_day % 7) + 1;
-					break;
-			}
+void test_Adc(){
+	count_adc = (count_adc + 1)%20;
+	if(count_adc == 0){
+		sensor_Read();
+		
+		// Display environmental monitoring data
+		float power = getPowerConsumption();
+		float humidity = getHumidity();
+		const char* light_level = getLightLevel();
+		float temperature = sensor_GetTemperature();
+		
+		// Display on LCD
+		lcd_ShowStr(10, 40, "Power:", RED, BLACK, 16, 0);
+		lcd_ShowFloatNum(100, 40, power, 4, RED, BLACK, 16);
+		lcd_ShowStr(180, 40, "mW", RED, BLACK, 16, 0);
+		
+		lcd_ShowStr(10, 60, "Light:", RED, BLACK, 16, 0);
+		lcd_ShowStr(100, 60, "      ", BLACK, BLACK, 16, 0); 
+		lcd_ShowStr(100, 60, (uint8_t*)light_level, RED, BLACK, 16, 0);
+		
+		lcd_ShowStr(10, 80, "Temp:", RED, BLACK, 16, 0);
+		lcd_ShowFloatNum(100, 80, temperature, 4, RED, BLACK, 16);
+		lcd_ShowStr(180, 80, "C", RED, BLACK, 16, 0);
+		
+		lcd_ShowStr(10, 100, "Humidity:", RED, BLACK, 16, 0);
+		lcd_ShowFloatNum(120, 100, humidity, 4, RED, BLACK, 16);
+		lcd_ShowStr(180, 100, "%", RED, BLACK, 16, 0);
+		
+		// Check alarm condition
+		if (humidity > 70.0f) {
+			lcd_ShowStr(10, 120, "ALARM: High Humidity!", RED, BLACK, 16, 0);
+		} else {
+			lcd_ShowStr(10, 120, "                      ", BLACK, BLACK, 16, 0);
 		}
-		else if(button_up_duration >= 40) { // Held for 2 seconds (40 cycles * 50ms)
-			auto_increment_counter++;
-			if(auto_increment_counter >= 4) { // Auto increment every 200ms (4 cycles)
-				auto_increment_counter = 0;
-				switch(setting_param) {
-					case PARAM_HOUR:
-						if(state == MODE_SET_TIME) temp_hour = (temp_hour + 1) % 24;
-						else alarm_hour = (alarm_hour + 1) % 24;
-						break;
-					case PARAM_MIN:
-						if(state == MODE_SET_TIME) temp_min = (temp_min + 1) % 60;
-						else alarm_min = (alarm_min + 1) % 60;
-						break;
-					case PARAM_SEC:
-						if(state == MODE_SET_TIME) temp_sec = (temp_sec + 1) % 60;
-						else alarm_sec = (alarm_sec + 1) % 60;
-						break;
-					case PARAM_DATE:
-						temp_date = (temp_date % 31) + 1;
-						break;
-					case PARAM_MONTH:
-						temp_month = (temp_month % 12) + 1;
-						break;
-					case PARAM_YEAR:
-						temp_year = (temp_year + 1) % 100;
-						break;
-					case PARAM_DAY:
-						temp_day = (temp_day % 7) + 1;
-						break;
+	}
+}
+
+void displayTimeOn7Seg() {
+	ds3231_ReadTime();
+	// Display time in format HH:MM on 7-segment
+	led7_SetDigit(ds3231_hours / 10, 0, 0);
+	led7_SetDigit(ds3231_hours % 10, 1, 0);
+	led7_SetColon(1);
+	led7_SetDigit(ds3231_min / 10, 2, 0);
+	led7_SetDigit(ds3231_min % 10, 3, 0);
+}
+
+void sendDataToPC() {
+	float power = getPowerConsumption();
+	float humidity = getHumidity();
+	const char* light_level = getLightLevel();
+	float temperature = sensor_GetTemperature();
+	
+	uart_Rs232SendString((uint8_t*)"\r\n=== Environmental Monitoring ===\r\n");
+	uart_Rs232SendString((uint8_t*)"Power: ");
+	uart_Rs232SendNumPercent((uint32_t)(power * 100));
+	uart_Rs232SendString((uint8_t*)" mW\r\n");
+	
+	uart_Rs232SendString((uint8_t*)"Light: ");
+	uart_Rs232SendString((uint8_t*)light_level);
+	uart_Rs232SendString((uint8_t*)"\r\n");
+	
+	uart_Rs232SendString((uint8_t*)"Temperature: ");
+	uart_Rs232SendNumPercent((uint32_t)(temperature * 100));
+	uart_Rs232SendString((uint8_t*)" C\r\n");
+	
+	uart_Rs232SendString((uint8_t*)"Humidity: ");
+	uart_Rs232SendNumPercent((uint32_t)(humidity * 100));
+	uart_Rs232SendString((uint8_t*)" %\r\n");
+	
+	if (humidity > 70.0f) {
+		uart_Rs232SendString((uint8_t*)"*** ALARM: Humidity exceeds 70% ***\r\n");
+	}
+}
+
+void test_Buzzer(){
+	float humidity = getHumidity();
+	
+	// Alarm system for high humidity
+	if (humidity > 70.0f) {
+		if (timer3_flag) {
+			timer3_flag = 0;
+			setTimer3(1000);
+			
+			// Toggle buzzer for alarm
+			static uint8_t buzzer_state = 0;
+			if (buzzer_state == 0) {
+				buzzer_SetVolume(50);
+				buzzer_state = 1;
+			} else {
+				buzzer_SetVolume(0);
+				buzzer_state = 0;
+			}
+			
+			// Send alarm message to PC
+			sendDataToPC();
+		}
+	} else {
+		// Normal operation - button control
+		if(isButtonUp()){
+			buzzer_SetVolume(50);
+		}
+
+		if(isButtonDown()){
+			buzzer_SetVolume(0);
+		}
+
+		if(isButtonRight()){
+			buzzer_SetVolume(25);
+		}
+		
+		// Send data periodically when not in alarm
+		if (timer3_flag) {
+			timer3_flag = 0;
+			setTimer3(1000);
+			sendDataToPC();
+		}
+	}
+}
+
+// ============ Exercise 2: Power Consumption Chart ============
+float power_samples[MAX_SAMPLES];
+uint8_t sample_index = 0;
+uint8_t total_samples = 0;
+
+void drawPowerChart() {
+	if (timer4_flag) {
+		timer4_flag = 0;
+		setTimer4(15000); // Reset 15s timer
+		
+		// Get new power sample
+		float power = getPowerConsumption();
+		power_samples[sample_index] = power;
+		sample_index = (sample_index + 1) % MAX_SAMPLES;
+		if (total_samples < MAX_SAMPLES) {
+			total_samples++;
+		}
+		
+		// Clear chart area
+		lcd_Fill(CHART_X, CHART_Y, CHART_X + CHART_WIDTH, CHART_Y + CHART_HEIGHT, BLACK);
+		
+		// Draw border
+		lcd_DrawRectangle(CHART_X, CHART_Y, CHART_X + CHART_WIDTH, CHART_Y + CHART_HEIGHT, WHITE);
+		
+		// Draw title
+		lcd_ShowStr(CHART_X + 40, CHART_Y - 15, "Power Chart (mW)", CYAN, BLACK, 16, 0);
+		
+		if (total_samples > 1) {
+			// Find min and max for scaling
+			float max_power = power_samples[0];
+			float min_power = power_samples[0];
+			
+			for (uint8_t i = 0; i < total_samples; i++) {
+				uint8_t idx = (sample_index - total_samples + i + MAX_SAMPLES) % MAX_SAMPLES;
+				if (power_samples[idx] > max_power) max_power = power_samples[idx];
+				if (power_samples[idx] < min_power) min_power = power_samples[idx];
+			}
+			
+			// Add some margin to scale
+			float range = max_power - min_power;
+			if (range < 0.1f) range = 0.1f; // Minimum range
+			
+			// Draw grid lines (horizontal)
+			for (uint8_t i = 1; i < 5; i++) {
+				uint16_t y = CHART_Y + (CHART_HEIGHT * i) / 5;
+				for (uint16_t x = CHART_X; x <= CHART_X + CHART_WIDTH; x += 5) {
+					lcd_DrawPoint(x, y, GRAY);
 				}
 			}
-		}
-	} else {
-		button_up_duration = 0;
-		auto_increment_counter = 0;
-	}
-}
-
-void fsm_clock() {
-	static uint8_t last_state = 0xFF;
-	
-	switch (state) {
-	case INIT:
-		lcd_Clear(BLACK);
-		displayModeIndicator();
-		state = MODE_DISPLAY_TIME;
-		break;
-	case MODE_DISPLAY_TIME:
-		if(isButtonDown()) {
-			state = MODE_SET_TIME;
-			setting_param = PARAM_HOUR;
-			lcd_Clear(BLACK);
 			
-			temp_hour = ds3231_hours;
-			temp_min = ds3231_min;
-			temp_sec = ds3231_sec;
-			temp_date = ds3231_date;
-			temp_month = ds3231_month;
-			temp_year = ds3231_year;
-			temp_day = ds3231_day;
-			last_state = 0xFF;
-		}
-		
-		if(last_state != state) {
-			displayModeIndicator();
-			last_state = state;
-		}
-		
-		displayTime();
-		break;
-	case MODE_SET_TIME:
-		if(isButtonDown()) {
-			state = MODE_SET_ALARM;
-			setting_param = PARAM_HOUR;
-			lcd_Clear(BLACK);
-			last_state = 0xFF;
-		}
-		
-		if(last_state != state) {
-			displayModeIndicator();
-			last_state = state;
-		}
-		
-		handleIncrementButton();
-		
-		if(button_count[12] == 1) {
-			setting_param++;
+			// Draw data points and lines
+			uint16_t x_step = CHART_WIDTH / (total_samples - 1);
+			uint16_t prev_x = 0, prev_y = 0;
 			
-			if(setting_param > PARAM_DAY) {
-				ds3231_Write(ADDRESS_HOUR, temp_hour);
-				ds3231_Write(ADDRESS_MIN, temp_min);
-				ds3231_Write(ADDRESS_SEC, temp_sec);
-				ds3231_Write(ADDRESS_DATE, temp_date);
-				ds3231_Write(ADDRESS_MONTH, temp_month);
-				ds3231_Write(ADDRESS_YEAR, temp_year);
-				ds3231_Write(ADDRESS_DAY, temp_day);
+			for (uint8_t i = 0; i < total_samples; i++) {
+				uint8_t idx = (sample_index - total_samples + i + MAX_SAMPLES) % MAX_SAMPLES;
+				float normalized = (power_samples[idx] - min_power) / range;
 				
-				state = MODE_DISPLAY_TIME;
-				setting_param = PARAM_HOUR;
-				lcd_Clear(BLACK);
-				last_state = 0xFF;
+				uint16_t x = CHART_X + (i * x_step);
+				uint16_t y = CHART_Y + CHART_HEIGHT - (uint16_t)(normalized * (CHART_HEIGHT - 10));
+				
+				// Draw point
+				lcd_Fill(x - 1, y - 1, x + 1, y + 1, GREEN);
+				
+				// Draw line from previous point
+				if (i > 0) {
+					lcd_DrawLine(prev_x, prev_y, x, y, YELLOW);
+				}
+				
+				prev_x = x;
+				prev_y = y;
 			}
-		}
-		
-		displayTime();
-		break;
-		
-	case MODE_SET_ALARM:
-		if(isButtonDown()) {
-			state = MODE_DISPLAY_TIME;
-			setting_param = PARAM_HOUR;
-			lcd_Clear(BLACK);
-			last_state = 0xFF;
-		}
-		
-		if(last_state != state) {
-			displayModeIndicator();
-			last_state = state;
-		}
-		
-		handleIncrementButton();
-		
-		if(button_count[12] == 1) {
-			setting_param++;
 			
-			if(setting_param > PARAM_SEC) {
-				state = MODE_DISPLAY_TIME;
-				setting_param = PARAM_HOUR;
-				lcd_Clear(BLACK);
-				last_state = 0xFF;
-			}
+			// Display current value
+			lcd_ShowStr(CHART_X, CHART_Y + CHART_HEIGHT + 5, "Current:", WHITE, BLACK, 16, 0);
+			lcd_ShowFloatNum(CHART_X + 80, CHART_Y + CHART_HEIGHT + 5, power, 4, GREEN, BLACK, 16);
+			lcd_ShowStr(CHART_X + 150, CHART_Y + CHART_HEIGHT + 5, "mW", WHITE, BLACK, 16, 0);
 		}
-		
-		displayTime();
-		break;
 	}
 }
 /* USER CODE END 4 */

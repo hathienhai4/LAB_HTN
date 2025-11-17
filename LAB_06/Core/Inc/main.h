@@ -37,9 +37,13 @@ extern "C" {
 
 /* Exported types ------------------------------------------------------------*/
 /* USER CODE BEGIN ET */
+extern ADC_HandleTypeDef hadc1;
+extern DMA_HandleTypeDef hdma_adc1;
+extern I2C_HandleTypeDef hi2c1;
 extern SPI_HandleTypeDef hspi1;
 extern TIM_HandleTypeDef htim2;
-extern I2C_HandleTypeDef hi2c1;
+extern TIM_HandleTypeDef htim13;
+extern UART_HandleTypeDef huart1;
 extern SRAM_HandleTypeDef hsram1;
 /* USER CODE END ET */
 
@@ -52,6 +56,8 @@ extern SRAM_HandleTypeDef hsram1;
 /* USER CODE BEGIN EM */
 
 /* USER CODE END EM */
+
+void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
 
 /* Exported functions prototypes ---------------------------------------------*/
 void Error_Handler(void);
