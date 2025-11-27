@@ -1,0 +1,2 @@
+buzzer.c:12:6:buzzer_init	8	static
+buzzer.c:16:6:buzzer_SetVolume	16	static
